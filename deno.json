@@ -2,7 +2,9 @@
     "imports": {
         "@concepts/": "./src/concepts/",
         "@utils/": "./src/utils/",
-        "@google/generative-ai": "npm:@google/generative-ai@^0.11.4"
+        "@google/generative-ai": "npm:@google/generative-ai@^0.11.4",
+        "@std/assert": "https://deno.land/std@0.224.0/assert/mod.ts",
+        "mongodb": "npm:mongodb@^6.9.0"
     },
     "tasks": {
         "concepts": "deno run --allow-net --allow-read --allow-sys --allow-env src/concept_server.ts --port 8000 --baseUrl /api"
