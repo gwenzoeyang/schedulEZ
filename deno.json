@@ -1,7 +1,8 @@
 {
     "imports": {
         "@concepts/": "./src/concepts/",
-        "@utils/": "./src/utils/"
+        "@utils/": "./src/utils/",
+        "@google/generative-ai": "npm:@google/generative-ai@^0.11.4"
     },
     "tasks": {
         "concepts": "deno run --allow-net --allow-read --allow-sys --allow-env src/concept_server.ts --port 8000 --baseUrl /api"

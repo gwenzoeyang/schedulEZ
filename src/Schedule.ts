@@ -30,7 +30,7 @@ export interface AIRecommenderLike {
 
 /**
  * === AI preferences container ================================================
- * (Kept for API stability—even though we no longer use availability/conflicts)
+ * (Kept for API stability—even though schedule is conflict-free)
  */
 export interface AIPreferences {
   major: string;
@@ -38,19 +38,76 @@ export interface AIPreferences {
   availability: Set<TimeSlot>;
 }
 
-// Ai stuffs
-let _geminiLoaded = false;
-let _GoogleGenerativeAI: any = null;
+/**
+ * --- Gemini minimal inline integration (least-invasive) ----------------------
+ *
+ * Reads API key/model from .env:
+ *   GEMINI_API_KEY=...
+ *   GEMINI_MODEL=gemini-2.5-flash   (default used if missing)
+ *
+ * Optionally reads ../../geminiConfig.json (same folder level your repo uses)
+ * for generationConfig. All of this is best-effort; if anything is missing,
+ * we gracefully return null so the rest of Schedule keeps working.
+ */
 
-// Try to load @google/generative-ai lazily so the rest of the app doesn't break if it's absent.
-try {
-  // deno or node with transpile: dynamic import at runtime
-  // @ts-ignore: runtime import
-  _GoogleGenerativeAI =
-    (await import("@google/generative-ai")).GoogleGenerativeAI;
-  _geminiLoaded = !!_GoogleGenerativeAI;
-} catch {
-  _geminiLoaded = false;
+type GenAIModel = {
+  generateContent(prompt: string, ...rest: unknown[]): Promise<{
+    response: { text(): string };
+  }>;
+};
+
+type GenAIClient = {
+  getGenerativeModel(args: {
+    model: string;
+    generationConfig?: unknown;
+  }): GenAIModel;
+};
+
+let _GeminiCtor: (new (apiKey: string) => GenAIClient) | null = null;
+let _geminiInitTried = false;
+
+async function loadGeminiCtor(): Promise<void> {
+  if (_geminiInitTried) return;
+  _geminiInitTried = true;
+  try {
+    const mod = await import("@google/generative-ai");
+    _GeminiCtor = (mod as any).GoogleGenerativeAI ?? null;
+  } catch {
+    _GeminiCtor = null;
+  }
+}
+
+async function loadEnv(name: string): Promise<string> {
+  try {
+    // Deno first
+    // deno-lint-ignore no-explicit-any
+    const d = (globalThis as any).Deno?.env?.get?.(name);
+    if (typeof d === "string" && d.length > 0) return d;
+  } catch {}
+  try {
+    // Node fallback (in case you run via node)
+    // deno-lint-ignore no-explicit-any
+    const n = (globalThis as any).process?.env?.[name];
+    if (typeof n === "string" && n.length > 0) return n;
+  } catch {}
+  return "";
+}
+
+// Optional: load generationConfig from a JSON file (best-effort).
+async function loadGeminiGenerationConfig(): Promise<unknown | undefined> {
+  try {
+    // Deno supports JSON import via assertions in many setups; if not, we fall back.
+    // @ts-ignore: JSON import assertion may need editor/plugin support
+    const cfg = await import(
+      "/Users/gwen-zoeyang/schedulEZ/geminiConfig.json",
+      {
+        with: { type: "json" },
+      } as any
+    );
+    return (cfg as any)?.default ?? (cfg as any);
+  } catch {
+    return undefined;
+  }
 }
 
 async function chooseWithGemini(
@@ -58,26 +115,30 @@ async function chooseWithGemini(
   candidates: Course[],
   prefs: AIPreferences,
 ): Promise<Course | null> {
-  const apiKey =
-    (typeof Deno !== "undefined"
-      ? Deno.env.get("GEMINI_API_KEY")
-      : process.env?.GEMINI_API_KEY) ||
-    "";
-  if (!_geminiLoaded || !apiKey || candidates.length === 0) return null;
+  if (candidates.length === 0) return null;
 
-  const genAI = new _GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  await loadGeminiCtor();
+  const apiKey = await loadEnv("GEMINI_API_KEY");
+  if (!_GeminiCtor || !apiKey) return null;
 
-  // Keep payload lean—IDs + a bit of context
+  const modelName = (await loadEnv("GEMINI_MODEL")) || "gemini-2.5-flash";
+  const generationConfig = await loadGeminiGenerationConfig();
+
+  const genAI = new _GeminiCtor(apiKey);
+  const model = genAI.getGenerativeModel({
+    model: modelName,
+    generationConfig, // optional; undefined if not present
+  });
+
+  // Keep payload slim: IDs + a hint — cheaper & more robust
   const slim = candidates.map((c) => ({
     courseID: c.courseID,
     title: c.title,
     instructor: c.instructor,
-    // keep meetingTimes/requirements if you want to bias selection more
   }));
 
   const system =
-    `Return ONLY a JSON object: {"courseID":"<exact id from the list>"}.
+    `Return ONLY a JSON object exactly like: {"courseID":"<exact id from the list>"}.
 No commentary. If nothing fits, return {"courseID":""}.`;
 
   const prompt = `${system}\n` +
@@ -101,8 +162,8 @@ No commentary. If nothing fits, return {"courseID":""}.`;
     const m = text.match(/"courseID"\s*:\s*"([^"]+)"/);
     picked = m?.[1] ?? "";
   }
-  if (!picked) return null;
 
+  if (!picked) return null;
   return candidates.find((c) => c.courseID === picked) ?? null;
 }
 
@@ -154,7 +215,7 @@ export class Schedule {
       );
     }
 
-    // No time-overlap or travel checks — conflict-free by design
+    // Conflict-free: no overlap or travel checks
     s.courses.set(course.courseID, course);
   }
 
@@ -204,7 +265,7 @@ export class Schedule {
    *   - get candidates from catalog
    *   - drop courses already in schedule
    *   - NO time/availability/travel filtering (conflict-free)
-   *   - delegate choice to AI
+   *   - delegate choice to Gemini (first), then fallback adapter, then first candidate
    */
   async suggestCourseAI(owner: User): Promise<Course> {
     const s = this.ensureState(owner);
@@ -214,16 +275,16 @@ export class Schedule {
       );
     }
 
+    // Broad candidate pool
     const all = [...(this.catalog.search() ?? new Set<Course>())];
 
     // Only exclude courses already in the schedule
-    // inside Schedule.suggestCourseAI (replace only the picking part)
     const candidates = all.filter((c) => !s.courses.has(c.courseID));
 
-    // 1) Try Gemini (least-invasive: no other code changes)
+    // 1) Try Gemini (least-invasive; single-file)
     let pick = await chooseWithGemini(owner, candidates, s.aiPreferences);
 
-    // 2) Fallback to provided AI adapter if present
+    // 2) Fallback to any adapter you may still pass in
     if (!pick && (this as any).ai?.chooseCourse) {
       pick = await (this as any).ai.chooseCourse(
         owner,
@@ -232,7 +293,7 @@ export class Schedule {
       );
     }
 
-    // 3) Last-resort fallback (still returns something to keep flow intact)
+    // 3) Last-resort fallback so behavior remains stable
     if (!pick) pick = candidates[0] ?? null;
 
     if (!pick) {
@@ -248,7 +309,7 @@ export class Schedule {
   /**
    * updateAfterAddAI(owner, addedCourse) -> Course
    * effects:
-   *   - NO availability subtraction (conflict-free)
+   *   - conflict-free: no availability subtraction
    *   - simply re-run suggestion against the remaining candidates
    */
   async updateAfterAddAI(owner: User, addedCourse: Course): Promise<Course> {
