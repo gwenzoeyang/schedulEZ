@@ -1,0 +1,5 @@
+Schedule.addCourse adds and prevents duplicates ... ok (0ms)
+Schedule.listSchedule throws when empty ... ok (0ms)
+Schedule.suggestCourseAI uses AI adapter fallback if Gemini unavailable ... ok (1ms)
+Schedule.updateAfterAddAI throws if prefs missing or course not present ... ok (0ms)
+Schedule.clear removes all courses ... ok (0ms)

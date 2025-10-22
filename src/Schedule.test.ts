@@ -1,108 +1,66 @@
+// src/tests/schedule_test.ts
+// change imports to include assertRejects
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 
-import { MongoClient } from "mongodb";
-import {
-  type Course,
-  CourseCatalog,
-} from "/Users/gwen-zoeyang/schedulEZ/src/CourseCatalog.ts";
+import type { Course } from "/Users/gwen-zoeyang/schedulEZ/src/CourseCatalog.ts";
 import {
   type AIRecommenderLike,
   Schedule,
 } from "/Users/gwen-zoeyang/schedulEZ/src/Schedule.ts";
 
-// ---------- helpers ----------------------------------------------------------
-
-function getEnv(...names: string[]): string {
-  for (const n of names) {
-    // Deno first
-    // deno-lint-ignore no-explicit-any
-    const d = (globalThis as any).Deno?.env?.get?.(n);
-    if (typeof d === "string" && d.length > 0) return d;
-    // Node fallback (in case)
-    // deno-lint-ignore no-explicit-any
-    const p = (globalThis as any).process?.env?.[n];
-    if (typeof p === "string" && p.length > 0) return p;
-  }
-  return "";
-}
-
-function errMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-async function loadCatalogFromMongo(): Promise<CourseCatalog> {
-  const uri = getEnv("MONGODB_URI", "MONGODB_URL", "mongodb_url");
-  if (!uri) {
-    throw new Error("❌ Missing MongoDB URI (mongodb_url or MONGODB_URI).");
-  }
-
-  const dbName = getEnv("MONGODB_DB", "DB_NAME", "db_name");
-  if (!dbName) {
-    throw new Error("❌ Missing MongoDB DB name (db_name or MONGODB_DB).");
-  }
-
-  const collName = getEnv(
-    "MONGODB_COLLECTION",
-    "COLLECTION",
-    "collection",
-    "collection_name",
-  ) ||
-    "courses";
-
-  const client = new MongoClient(uri);
-  try {
-    await client.connect();
-    const rows = await client.db(dbName).collection(collName).find({})
-      .toArray();
-    if (!rows || rows.length === 0) {
-      throw new Error(
-        `❌ MongoDB connected, but collection "${collName}" is empty.`,
-      );
+// Minimal in-memory catalog stub
+class CatalogStub {
+  constructor(private courses: Course[]) {}
+  getById(id: string): Course {
+    const c = this.courses.find((x) => x.courseID === id);
+    if (!c) {
+      throw new Error(`CourseCatalog.getById: courseId "${id}" not found`);
     }
-    return CourseCatalog.fromDbRows(rows as any);
-  } catch (err: unknown) {
-    throw new Error(
-      `❌ Failed to connect to MongoDB or fetch data: ${errMessage(err)}`,
-    );
-  } finally {
-    try {
-      await client.close();
-    } catch {}
+    return c;
+  }
+  search(): Set<Course> {
+    return new Set(this.courses);
   }
 }
 
-function toArray<T>(s: Set<T>): T[] {
-  return [...s];
-}
-
-// Simple AI stub ensures determinism if Gemini is disabled
-const FirstPickAI: AIRecommenderLike = {
-  chooseCourse: (_owner, candidates) => candidates[0] ?? null,
+const C1: Course = {
+  courseID: "CS101",
+  title: "Intro CS",
+  instructor: "Grace Hopper",
+  meetingTimes: [{ day: "M", start: "10:00", end: "11:00" }],
+  requirements: [[]],
+};
+const C2: Course = {
+  courseID: "CS102",
+  title: "DSA",
+  instructor: "Ada Lovelace",
+  meetingTimes: [{ day: "T", start: "10:00", end: "11:00" }],
+  requirements: [[]],
+};
+const C3: Course = {
+  courseID: "CS103",
+  title: "Systems",
+  instructor: "Ken Thompson",
+  meetingTimes: [{ day: "W", start: "10:00", end: "11:00" }],
+  requirements: [[]],
 };
 
-// ---------- tests ------------------------------------------------------------
-
-Deno.test("Schedule.addCourse adds and prevents duplicates (Mongo-backed)", async () => {
-  const catalog = await loadCatalogFromMongo();
-  const all = toArray(catalog.search());
-
-  const sch = new Schedule(catalog, FirstPickAI);
+Deno.test("Schedule.addCourse adds and prevents duplicates", () => {
+  const sch = new Schedule(new CatalogStub([C1]), { chooseCourse: () => null });
   const user = { id: "u1" };
 
-  const c1: Course = all[0];
-  sch.addCourse(user, c1);
+  sch.addCourse(user, C1);
   assertEquals(sch.listSchedule(user).size, 1);
 
   assertThrows(
-    () => sch.addCourse(user, c1),
+    () => sch.addCourse(user, C1),
     Error,
     `already in the schedule`,
   );
 });
 
-Deno.test("Schedule.listSchedule throws when empty (Mongo-backed)", async () => {
-  const catalog = await loadCatalogFromMongo();
-  const sch = new Schedule(catalog, FirstPickAI);
+Deno.test("Schedule.listSchedule throws when empty", () => {
+  const sch = new Schedule(new CatalogStub([]), { chooseCourse: () => null });
   const user = { id: "u1" };
 
   assertThrows(
@@ -112,56 +70,47 @@ Deno.test("Schedule.listSchedule throws when empty (Mongo-backed)", async () => 
   );
 });
 
-Deno.test("Schedule.suggestCourseAI chooses a candidate with fallback AI (Mongo-backed)", async () => {
-  const catalog = await loadCatalogFromMongo();
-  const all = toArray(catalog.search());
-
-  const sch = new Schedule(catalog, FirstPickAI);
+Deno.test("Schedule.suggestCourseAI uses AI adapter fallback if Gemini unavailable", async () => {
+  // AI stub always picks CS102
+  const ai: AIRecommenderLike = {
+    chooseCourse: () => C2,
+  };
+  const sch = new Schedule(new CatalogStub([C1, C2, C3]), ai);
   const user = { id: "u1" };
 
-  sch.setAIPreferences(user, "CS", new Set(["ai", "systems"]), new Set());
+  sch.setAIPreferences(user, "CS", new Set(["systems"]), new Set());
   const pick = await sch.suggestCourseAI(user);
-
-  assert(pick && typeof pick.courseID === "string");
-  const ids = new Set([...sch.listSchedule(user)].map((c) => c.courseID));
-  assert(!ids.has(pick.courseID));
+  assertEquals(pick.courseID, "CS102");
 });
 
-Deno.test("Schedule.updateAfterAddAI throws if prefs missing or course not present (Mongo-backed)", async () => {
-  const catalog = await loadCatalogFromMongo();
-  const all = toArray(catalog.search());
-  const sch = new Schedule(catalog, FirstPickAI);
+Deno.test("Schedule.updateAfterAddAI throws if prefs missing or course not present", async () => {
+  const sch = new Schedule(new CatalogStub([C1]), { chooseCourse: () => C1 });
   const user = { id: "u1" };
-  const c = all[0];
 
   // No prefs set
-  await assertRejects(
-    () => sch.updateAfterAddAI(user, c),
+  await assertRejects( // ⬅️ use assertRejects
+    () => sch.updateAfterAddAI(user, C1),
     Error,
     "aiPreferences not set",
   );
 
   // Set prefs but course not in schedule
   sch.setAIPreferences(user, "CS", new Set(), new Set());
-  await assertRejects(
-    () => sch.updateAfterAddAI(user, c),
+  await assertRejects( // ⬅️ use assertRejects
+    () => sch.updateAfterAddAI(user, C1),
     Error,
     "is not in the schedule",
   );
 });
 
-Deno.test("Schedule.clear removes all courses (Mongo-backed)", async () => {
-  const catalog = await loadCatalogFromMongo();
-  const all = toArray(catalog.search());
-  if (all.length < 2) {
-    throw new Error("❌ Need at least 2 courses in MongoDB for this test.");
-  }
-
-  const sch = new Schedule(catalog, FirstPickAI);
+Deno.test("Schedule.clear removes all courses", () => {
+  const sch = new Schedule(new CatalogStub([C1, C2]), {
+    chooseCourse: () => null,
+  });
   const user = { id: "u1" };
 
-  sch.addCourse(user, all[0]);
-  sch.addCourse(user, all[1]);
+  sch.addCourse(user, C1);
+  sch.addCourse(user, C2);
   assertEquals(sch.listSchedule(user).size, 2);
 
   sch.clear(user);
