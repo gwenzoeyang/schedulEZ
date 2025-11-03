@@ -8,10 +8,6 @@
  *
  */
 
-export interface Requirement {
-  code: string; // e.g., "QR", "HSCI", "LAB", "WRI"
-}
-
 export interface TimeSlot {
   // Example: { day: "Mon", start: "10:00", end: "11:20"}
   day: string;
@@ -23,34 +19,27 @@ export interface Course {
   courseID: string; // authoritative ID, e.g., "CS-220-01-FA25"
   title: string; // "Blue on the Move"
   instructor: string; // "Ada Lovelace"
-  meetingTimes: TimeSlot[];
+  DBmeetingTimes: string;
+  meetingTimes?: TimeSlot[];
   location?: string; // "SCI 101" or "Zoom"
-  requirements: Requirement[][];
+  subject?: string;
   campus?: string; // "Wellesley", "MIT", etc.
 }
 
 export type CourseFilters = {
   instructor?: string; // fuzzy match (case-insensitive)
-  department?: string; // e.g., "CS", "MATH" (derived from leading letters of courseId)
+  subject?: string; // e.g., "CS", "MATH"
   day?: TimeSlot["day"]; // "M" | ... | "F"
   timeWindow?: {
-    start: string; // "HH:MM" 24h
-    end: string; // "HH:MM" 24h
+    day: string;
+    start?: string; // "HH:MM" 24h
+    end?: string; // "HH:MM" 24h
   };
 };
 
 // === DB adapter for Mongo documents =======================================
 
 // Matches your actual Mongo shape
-type CourseDB = {
-  _id?: unknown;
-  courseID: string; // capital D in DB
-  title: string;
-  instructor: string;
-  meetingTimes: string[];
-  requirements: Requirement[][];
-  campus?: string; // optional in DB
-};
 
 // export interface Course {
 //   courseId: string; // authoritative ID, e.g., "CS-220-01-FA25"
@@ -63,9 +52,9 @@ type CourseDB = {
 // }
 
 // Convert DB row → app Course
-function adaptCourse(dbRow: CourseDB): Course {
+function adaptCourse(dbRow: Course): Course {
   const meeting_times: TimeSlot[] = [];
-  for (const time of dbRow.meetingTimes) {
+  for (const time of dbRow.DBmeetingTimes) {
     const parts = time.split(" - ");
     const day_s = parts[0];
     const start = parts[1];
@@ -80,8 +69,9 @@ function adaptCourse(dbRow: CourseDB): Course {
     courseID: dbRow.courseID,
     title: dbRow.title,
     instructor: dbRow.instructor,
+    DBmeetingTimes: dbRow.DBmeetingTimes,
     meetingTimes: meeting_times,
-    requirements: dbRow.requirements,
+    subject: departmentOfCourseId(dbRow.title),
   };
 }
 
@@ -98,7 +88,7 @@ function departmentOfCourseId(courseId: string): string {
 }
 
 // Convenience: transform many DB rows
-function adaptMany(rows: CourseDB[]): Course[] {
+function adaptMany(rows: Course[]): Course[] {
   return rows.map(adaptCourse);
 }
 
@@ -131,8 +121,8 @@ export class CourseCatalog {
   private byId: Map<string, Course> = new Map();
   private all: Course[] = [];
 
-  static fromDbRows(rows: CourseDB[]): CourseCatalog {
-    return new CourseCatalog(adaptMany(rows as CourseDB[]));
+  static fromDbRows(rows: Course[]): CourseCatalog {
+    return new CourseCatalog(rows);
   }
 
   constructor(initialCourses: Course[] = []) {
@@ -200,10 +190,10 @@ export class CourseCatalog {
         filters.instructor && !fuzzyContains(c.instructor, filters.instructor)
       ) continue;
 
-      // NEW: Filter by department (derived from courseId leading letters)
-      if (filters.department) {
-        const want = filters.department.trim().toUpperCase();
-        const have = departmentOfCourseId(c.courseID);
+      // NEW: Filter by subject (derived from courseId leading letters)
+      if (filters.subject) {
+        const want = filters.subject.trim().toUpperCase();
+        const have = c.subject;
         if (have !== want) continue;
       }
 

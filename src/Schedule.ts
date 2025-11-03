@@ -1,9 +1,6 @@
-// src/concepts/Schedule.ts
+// src/Schedule.ts
 
-/**
- * === Lightweight domain stubs (swap for your real types) =====================
- */
-
+/** ================= Domain types (kept from your file) ===================== */
 export interface Requirement {
   code: string; // e.g., "QR", "HSCI", "LAB", "WRI"
 }
@@ -24,17 +21,16 @@ export interface Course {
   requirements: Requirement[][];
   campus?: string; // "Wellesley", "MIT", etc.
 }
+
 export interface User {
   id: string;
   name?: string;
 }
 
-/**
- * === External dependencies (assumed implemented elsewhere) ===================
- */
+/** ============== Catalog & AI interfaces (make async for Mongo) ============ */
 export interface CourseCatalogLike {
-  getById(courseID: string): Course; // throws if not found
-  search(query?: string, filters?: unknown): Set<Course>; // used broadly to get candidates
+  getById(courseID: string): Promise<Course>; // now async
+  search(query?: string, filters?: unknown): Promise<Set<Course>>; // now async
 }
 
 /** Simple AI chooser that picks ONE course from filtered candidates. */
@@ -46,34 +42,22 @@ export interface AIRecommenderLike {
   ): Promise<Course | null> | Course | null;
 }
 
-/**
- * === AI preferences container ================================================
- * (Kept for API stability—even though schedule is conflict-free)
- */
+/** ======================= AI prefs (unchanged) ============================= */
 export interface AIPreferences {
   major: string;
   interests: Set<string>;
-  availability: Set<TimeSlot>;
+  availability: Set<string>;
 }
 
-/**
- * --- Gemini minimal inline integration (least-invasive) ----------------------
- *
- * Reads API key/model from .env:
- *   GEMINI_API_KEY=...
- *   GEMINI_MODEL=gemini-2.5-flash   (default used if missing)
- *
- * Optionally reads ../../geminiConfig.json (same folder level your repo uses)
- * for generationConfig. All of this is best-effort; if anything is missing,
- * we gracefully return null so the rest of Schedule keeps working.
- */
+/** ============== Gemini (unchanged except types are explicit) ============== */
+// (same lightweight integration you already had)
 
 type GenAIModel = {
-  generateContent(prompt: string, ...rest: unknown[]): Promise<{
-    response: { text(): string };
-  }>;
+  generateContent(
+    prompt: string,
+    ...rest: unknown[]
+  ): Promise<{ response: { text(): string } }>;
 };
-
 type GenAIClient = {
   getGenerativeModel(args: {
     model: string;
@@ -88,7 +72,7 @@ async function loadGeminiCtor(): Promise<void> {
   if (_geminiInitTried) return;
   _geminiInitTried = true;
   try {
-    const mod = await import("@google/generative-ai");
+    const mod = await import("npm:@google/generative-ai");
     _GeminiCtor = (mod as any).GoogleGenerativeAI ?? null;
   } catch {
     _GeminiCtor = null;
@@ -103,7 +87,7 @@ async function loadEnv(name: string): Promise<string> {
     if (typeof d === "string" && d.length > 0) return d;
   } catch {}
   try {
-    // Node fallback (in case you run via node)
+    // Node fallback
     // deno-lint-ignore no-explicit-any
     const n = (globalThis as any).process?.env?.[name];
     if (typeof n === "string" && n.length > 0) return n;
@@ -111,16 +95,14 @@ async function loadEnv(name: string): Promise<string> {
   return "";
 }
 
-// Optional: load generationConfig from a JSON file (best-effort).
-async function loadGeminiGenerationConfig(): Promise<unknown | undefined> {
+// Optional: load generationConfig from JSON; if not found, ok.
+async function loadGeminiGenerationConfig(): Promise<unknown> {
   try {
-    // Deno supports JSON import via assertions in many setups; if not, we fall back.
-    // @ts-ignore: JSON import assertion may need editor/plugin support
+    // Edit path if you move this file
+    // @ts-ignore JSON assertion
     const cfg = await import(
-      "/Users/gwen-zoeyang/schedulEZ/geminiConfig.json",
-      {
-        with: { type: "json" },
-      } as any
+      "../geminiConfig.json",
+      { with: { type: "json" } } as any
     );
     return (cfg as any)?.default ?? (cfg as any);
   } catch {
@@ -134,30 +116,27 @@ async function chooseWithGemini(
   prefs: AIPreferences,
 ): Promise<Course | null> {
   if (candidates.length === 0) return null;
-
   await loadGeminiCtor();
   const apiKey = await loadEnv("GEMINI_API_KEY");
   if (!_GeminiCtor || !apiKey) return null;
 
   const modelName = (await loadEnv("GEMINI_MODEL")) || "gemini-2.5-flash";
   const generationConfig = await loadGeminiGenerationConfig();
-
   const genAI = new _GeminiCtor(apiKey);
   const model = genAI.getGenerativeModel({
     model: modelName,
-    generationConfig, // optional; undefined if not present
+    generationConfig,
   });
 
-  // Keep payload slim: IDs + a hint — cheaper & more robust
+  // Keep payload slim
   const slim = candidates.map((c) => ({
     courseID: c.courseID,
     title: c.title,
     instructor: c.instructor,
   }));
 
-  const system =
-    `Return ONLY a JSON object exactly like: {"courseID":"<exact id from the list>"}.
-No commentary. If nothing fits, return {"courseID":""}.`;
+  const system = `Return ONLY a JSON object exactly like: {"courseID":""}.\n` +
+    `No commentary.\nIf nothing fits, return {"courseID":""}.`;
 
   const prompt = `${system}\n` +
     `USER=${
@@ -180,29 +159,115 @@ No commentary. If nothing fits, return {"courseID":""}.`;
     const m = text.match(/"courseID"\s*:\s*"([^"]+)"/);
     picked = m?.[1] ?? "";
   }
-
   if (!picked) return null;
   return candidates.find((c) => c.courseID === picked) ?? null;
 }
 
+/** ===================== Mongo-backed catalog =============================== */
 /**
- * === Schedule concept (conflict-free) ========================================
- * purpose:
- *   let a student compose a tentative plan; allow overlapping courses so they
- *   can explore different possibilities. Optionally, use AI to recommend a
- *   course, but do not block on time conflicts.
- *
- * principle:
- *   each schedule belongs to one student.
- *   adding a course should NOT block on overlaps or travel constraints.
- *
- * state:
- *   userId -> {
- *     courses: Map<courseID, Course>
- *     aiPreferences?: AIPreferences
- *     aiSuggestion?: Course
- *   }
+ * Mongo collection shape. If your actual field names differ, map them below.
  */
+type CourseDoc = {
+  courseID: string;
+  title: string;
+  instructor: string;
+  meetingTimes: { day: string; start: string; end: string }[];
+  location?: string;
+  requirements?: { code: string }[][]; // allow missing; we’ll default later
+  campus?: string;
+};
+
+import { Collection, Db, MongoClient } from "npm:mongodb";
+
+class MongoCourseCatalog implements CourseCatalogLike {
+  private col: Collection<CourseDoc>;
+
+  constructor(db: Db, collectionName = "courses") {
+    this.col = db.collection<CourseDoc>(collectionName);
+  }
+
+  /** Get a single course by ID (throws if not found) */
+  async getById(courseID: string): Promise<Course> {
+    const doc = await this.col.findOne({ courseID });
+    if (!doc) {
+      throw new Error(`CourseCatalog.getById: "${courseID}" not found`);
+    }
+    return this.docToCourse(doc);
+  }
+
+  /**
+   * Broad search:
+   * - if no query/filters: return ALL courses (be careful with very large catalogs)
+   * - if query provided: fuzzy-ish regex on title/instructor/courseID
+   * - extend filters as needed (department, days, etc.)
+   */
+  async search(query?: string, _filters?: unknown): Promise<Set<Course>> {
+    let cursor;
+    if (query && query.trim()) {
+      const q = query.trim();
+      cursor = this.col.find({
+        $or: [
+          { title: { $regex: q, $options: "i" } },
+          { instructor: { $regex: q, $options: "i" } },
+          { courseID: { $regex: q, $options: "i" } },
+        ],
+      });
+    } else {
+      cursor = this.col.find({});
+    }
+    const out: Course[] = [];
+    for await (const doc of cursor) {
+      out.push(this.docToCourse(doc));
+    }
+    return new Set(out);
+  }
+
+  /** Map Mongo doc -> your Course interface */
+  private docToCourse(doc: CourseDoc): Course {
+    return {
+      courseID: doc.courseID,
+      title: doc.title,
+      instructor: doc.instructor,
+      meetingTimes: (doc.meetingTimes ?? []).map((mt) => ({
+        day: mt.day,
+        start: mt.start,
+        end: mt.end,
+      })),
+      location: doc.location,
+      requirements: (doc.requirements as Requirement[][] | undefined) ?? [],
+      campus: doc.campus,
+    };
+  }
+}
+
+/** Factory to build a Schedule wired to Mongo */
+export async function createScheduleWithMongo(
+  ai: AIRecommenderLike = { chooseCourse: () => null },
+  opts?: {
+    mongoUrl?: string;
+    dbName?: string;
+    collection?: string;
+  },
+): Promise<Schedule> {
+  const mongoUrl = opts?.mongoUrl || (await loadEnv("MONGODB_URL"));
+  const dbName = opts?.dbName || (await loadEnv("DB_NAME")) || "schedulEZ";
+  const collection = opts?.collection ||
+    (await loadEnv("COURSES_COLLECTION")) || "sample10";
+
+  if (!mongoUrl) {
+    throw new Error(
+      `createScheduleWithMongo: MONGODB_URL is required (env or opts.mongoUrl)`,
+    );
+  }
+  const client = new MongoClient(mongoUrl);
+  await client.connect();
+  const db = client.db(dbName);
+
+  const catalog = new MongoCourseCatalog(db, collection);
+  return new Schedule(catalog, ai);
+}
+
+/** ======================= Schedule concept (async catalog) ================== */
 export class Schedule {
   private schedules: Map<
     string,
@@ -220,20 +285,19 @@ export class Schedule {
 
   // ------------------------------ core actions -------------------------------
 
+  /** New helper: add by ID, loads from Mongo-backed catalog */
+  async addCourseById(owner: User, courseID: string): Promise<void> {
+    const course = await this.catalog.getById(courseID); // may be Mongo-backed
+    this.addCourse(owner, course); // <- sync
+  }
+
   addCourse(owner: User, course: Course): void {
-    // Ensure the course exists in the authoritative catalog
-    this.catalog.getById(course.courseID);
-
     const s = this.ensureState(owner);
-
-    // Prevent exact duplicates in the same schedule
     if (s.courses.has(course.courseID)) {
       throw new Error(
         `Schedule.addCourse: course "${course.courseID}" is already in the schedule`,
       );
     }
-
-    // Conflict-free: no overlap or travel checks
     s.courses.set(course.courseID, course);
   }
 
@@ -262,29 +326,17 @@ export class Schedule {
 
   // ------------------------------ AI actions ---------------------------------
 
-  /**
-   * setAIPreferences(owner, major, interests, availability)
-   * effects: create or update aiPreferences for the owner
-   */
   setAIPreferences(
     owner: User,
     major: string,
     interests: Set<string>,
-    availability: Set<TimeSlot>,
+    availability: Set<string>,
   ): void {
     const s = this.ensureState(owner);
     s.aiPreferences = { major, interests, availability };
     s.aiSuggestion = undefined;
   }
 
-  /**
-   * suggestCourseAI(owner) -> Course
-   * effects:
-   *   - get candidates from catalog
-   *   - drop courses already in schedule
-   *   - NO time/availability/travel filtering (conflict-free)
-   *   - delegate choice to Gemini (first), then fallback adapter, then first candidate
-   */
   async suggestCourseAI(owner: User): Promise<Course> {
     const s = this.ensureState(owner);
     if (!s.aiPreferences) {
@@ -293,16 +345,13 @@ export class Schedule {
       );
     }
 
-    // Broad candidate pool
-    const all = [...(this.catalog.search() ?? new Set<Course>())];
-
-    // Only exclude courses already in the schedule
+    // Broad candidate pool from Mongo catalog
+    const all = [...(await this.catalog.search())];
     const candidates = all.filter((c) => !s.courses.has(c.courseID));
 
-    // 1) Try Gemini (least-invasive; single-file)
+    // 1) Try Gemini
     let pick = await chooseWithGemini(owner, candidates, s.aiPreferences);
-
-    // 2) Fallback to any adapter you may still pass in
+    // 2) Optional adapter fallback
     if (!pick && (this as any).ai?.chooseCourse) {
       pick = await (this as any).ai.chooseCourse(
         owner,
@@ -310,29 +359,19 @@ export class Schedule {
         s.aiPreferences,
       );
     }
-
-    // 3) Last-resort fallback so behavior remains stable
+    // 3) Last resort
     if (!pick) pick = candidates[0] ?? null;
-
     if (!pick) {
       throw new Error(
         `Schedule.suggestCourseAI: no suitable course found by AI`,
       );
     }
-
     s.aiSuggestion = pick;
     return pick;
   }
 
-  /**
-   * updateAfterAddAI(owner, addedCourse) -> Course
-   * effects:
-   *   - conflict-free: no availability subtraction
-   *   - simply re-run suggestion against the remaining candidates
-   */
   async updateAfterAddAI(owner: User, addedCourse: Course): Promise<Course> {
     const s = this.ensureState(owner);
-
     if (!s.aiPreferences) {
       throw new Error(
         `Schedule.updateAfterAddAI: aiPreferences not set for this user`,
@@ -343,14 +382,10 @@ export class Schedule {
         `Schedule.updateAfterAddAI: added course "${addedCourse.courseID}" is not in the schedule`,
       );
     }
-
-    // Just refresh the AI suggestion with current state
-    const next = await this.suggestCourseAI(owner);
-    return next;
+    return await this.suggestCourseAI(owner);
   }
 
   // ------------------------------ internals ----------------------------------
-
   private ensureState(owner: User) {
     let state = this.schedules.get(owner.id);
     if (!state) {

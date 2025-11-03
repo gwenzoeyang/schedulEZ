@@ -1,4 +1,5 @@
 import { Hono } from "jsr:@hono/hono";
+import { cors } from "jsr:@hono/hono/cors";
 import { getDb } from "@utils/database.ts";
 import { walk } from "jsr:@std/fs";
 import { parseArgs } from "jsr:@std/cli/parse-args";
@@ -17,14 +18,23 @@ const PORT = parseInt(flags.port, 10);
 const BASE_URL = flags.baseUrl;
 const CONCEPTS_DIR = "src/concepts";
 
-/**
- * Main server function to initialize DB, load concepts, and start the server.
- */
 async function main() {
   const [db] = await getDb();
   const app = new Hono();
 
+  // Enable CORS for frontend
+  app.use(
+    "/*",
+    cors({
+      origin: "http://localhost:5173",
+      allowMethods: ["GET", "POST", "PUT", "DELETE"],
+      allowHeaders: ["Content-Type"],
+    }),
+  );
+
   app.get("/", (c) => c.text("Concept Server is running."));
+
+  // ... rest of your code
 
   // --- Dynamic Concept Loading and Routing ---
   console.log(`Scanning for concepts in ./${CONCEPTS_DIR}...`);
