@@ -4,12 +4,11 @@
  * fetching data
  *
  * const rows = await db.collection("courses").find({}).toArray();
-    const catalog = CourseCatalog.fromDbRows(rows);
- *
+ * const catalog = CourseCatalog.fromDbRows(rows);
  */
 
 export interface TimeSlot {
-  // Example: { day: "Mon", start: "10:00", end: "11:20"}
+  // Example: { day: "M", start: "10:00", end: "11:20"}
   day: string;
   start: string; // "HH:MM" 24h
   end: string; // "HH:MM" 24h
@@ -19,7 +18,7 @@ export interface Course {
   courseID: string; // authoritative ID, e.g., "CS-220-01-FA25"
   title: string; // "Blue on the Move"
   instructor: string; // "Ada Lovelace"
-  DBmeetingTimes: string;
+  DBmeetingTimes?: string[] | string; // allow string or string[]
   meetingTimes?: TimeSlot[];
   location?: string; // "SCI 101" or "Zoom"
   subject?: string;
@@ -39,100 +38,69 @@ export type CourseFilters = {
 
 // === DB adapter for Mongo documents =======================================
 
-// Matches your actual Mongo shape
+function parseDBTimes(raw?: string[] | string): TimeSlot[] {
+  if (!raw) return [];
+  const arr = Array.isArray(raw) ? raw : [raw];
 
-// export interface Course {
-//   courseId: string; // authoritative ID, e.g., "CS-220-01-FA25"
-//   title: string; // "Blue on the Move"
-//   instructor: string; // "Ada Lovelace"
-//   meetingTimes: TimeSlot[];
-//   location?: string; // "SCI 101" or "Zoom"
-//   requirements: Requirement[];
-//   campus: string; // "Wellesley", "MIT", etc.
-// }
+  const out: TimeSlot[] = [];
+  for (const s of arr) {
+    if (typeof s !== "string") continue;
+    const parts = s.split(" - ").map((p) => p.trim());
+    if (parts.length !== 3) continue;
+    const [days, start, end] = parts;
+    if (!days || !start || !end) continue;
 
-// Convert DB row → app Course
-function adaptCourse(dbRow: Course): Course {
-  const meeting_times: TimeSlot[] = [];
-  for (const time of dbRow.DBmeetingTimes) {
-    const parts = time.split(" - ");
-    const day_s = parts[0];
-    const start = parts[1];
-    const end = parts[2];
-    for (const day of day_s) {
-      const temp_time: TimeSlot = { day, start, end };
-      meeting_times.push(temp_time);
+    for (const ch of days) {
+      if ("MTWRFSU".includes(ch)) {
+        out.push({ day: ch, start, end });
+      }
     }
   }
+  return out;
+}
 
+// Convert DB row → app Course
+function adaptCourse(dbRow: any): Course {
+  const courseID: string = dbRow.courseID ?? dbRow.courseId ?? "";
   return {
-    courseID: dbRow.courseID,
-    title: dbRow.title,
-    instructor: dbRow.instructor,
+    courseID,
+    title: dbRow.title ?? "",
+    instructor: dbRow.instructor ?? "",
     DBmeetingTimes: dbRow.DBmeetingTimes,
-    meetingTimes: meeting_times,
-    subject: departmentOfCourseId(dbRow.title),
+    meetingTimes: parseDBTimes(dbRow.DBmeetingTimes),
+    subject: departmentOfCourseId(courseID),
+    location: dbRow.location,
+    campus: dbRow.campus,
   };
 }
 
-//getdeparmtnet helper for database integration
+//getdepartment helper for database integration
 function departmentOfCourseId(courseId: string): string {
-  // Grab the leading run of letters (ignore hyphens/spaces/numbers that follow)
-  // Examples:
-  //   "CS230"        -> "CS"
-  //   "MATH-220-01"  -> "MATH"
-  //   "BIOE101"      -> "BIOE"
-  //   "EECS-6.006"   -> "EECS"
   const m = (courseId || "").trim().match(/^[A-Za-z]+/);
   return (m?.[0] ?? "").toUpperCase();
 }
 
 // Convenience: transform many DB rows
-function adaptMany(rows: Course[]): Course[] {
+function adaptMany(rows: any[]): Course[] {
   return rows.map(adaptCourse);
 }
 
 /**
  * === CourseCatalog ===========================================================
- * purpose:
- *   provide authoritative course data (times, locations, instructors, requirements)
- *   for search and planning
- *
- * principle:
- *   the catalog aggregates courses each term; students query it for information,
- *   and other concepts (Schedule, RequirementTracker, CrossRegTravel) rely on it
- *   for consistency
- *
- * state:
- *   a set of Courses keyed by courseId
- *
- * actions:
- *   - search(query, filters) -> Set<Course>
- *   - getById(courseId) -> Course
  */
 export class CourseCatalog {
-  /**
-   * === State: the authoritative set of Courses ===============================
-   * Internally we keep both:
-   *  - a Map keyed by courseId for fast lookups
-   *  - an array snapshot for simple scans (search/filter)
-   * You can later swap the backing store for a DB without changing method signatures.
-   */
   private byId: Map<string, Course> = new Map();
   private all: Course[] = [];
 
-  static fromDbRows(rows: Course[]): CourseCatalog {
-    return new CourseCatalog(rows);
+  static fromDbRows(rows: any[]): CourseCatalog {
+    const adapted = adaptMany(rows);
+    return new CourseCatalog(adapted);
   }
 
   constructor(initialCourses: Course[] = []) {
     this.load(initialCourses);
   }
 
-  /**
-   * Load/replace the catalog content for the current term.
-   * (Not part of the original actions, but useful for bootstrapping/tests.)
-   */
   load(courses: Course[]): void {
     this.byId.clear();
     this.all = [];
@@ -142,13 +110,6 @@ export class CourseCatalog {
     }
   }
 
-  /**
-   * === Action: getById(courseId) -> Course ===================================
-   * requires: a course with this courseId exists
-   * effects:  returns that course
-   *
-   * Throws a descriptive error if not found (so callers can handle it explicitly).
-   */
   getById(courseId: string): Course {
     const found = this.byId.get(courseId);
     if (!found) {
@@ -159,45 +120,26 @@ export class CourseCatalog {
     return found;
   }
 
-  /**
-   * === Action: search(query, filters) -> Set<Course> ==========================
-   * effects: return all courses matching the given query/filters
-   *
-   * Query behavior (case-insensitive):
-   *  - If empty/undefined: rely only on filters.
-   *  - If provided: match if ANY of the tokens appears in
-   *      courseId, title, or instructor.
-   *
-   * Filters:
-   *  - instructor: fuzzy contains
-   *  - department: derived from leading letters of courseId (e.g., "CS", "MATH")
-   *  - day: at least one meetingTime has this day
-   *  - timeWindow: keep courses that overlap the window on ANY day
-   */
   search(query?: string, filters: CourseFilters = {}): Set<Course> {
     const tokens = tokenize(query);
-
     const results = new Set<Course>();
+
     for (const c of this.all) {
-      // Token match (if tokens exist)
       const hay = `${c.courseID} ${c.title} ${c.instructor}`.toLowerCase();
       const tokenOk = tokens.length === 0 ||
         tokens.some((t) => hay.includes(t));
       if (!tokenOk) continue;
 
-      // Filter: instructor
       if (
         filters.instructor && !fuzzyContains(c.instructor, filters.instructor)
       ) continue;
 
-      // NEW: Filter by subject (derived from courseId leading letters)
       if (filters.subject) {
         const want = filters.subject.trim().toUpperCase();
         const have = c.subject;
         if (have !== want) continue;
       }
 
-      // Filter: day
       if (filters.day) {
         const meetsThatDay = c.meetingTimes?.some((mt) =>
           mt.day === filters.day
@@ -205,11 +147,14 @@ export class CourseCatalog {
         if (!meetsThatDay) continue;
       }
 
-      // Filter: timeWindow (overlap anywhere)
       if (filters.timeWindow) {
-        const { start, end } = filters.timeWindow;
-        const win = { start: toMinutes(start), end: toMinutes(end) };
-        const overlaps = c.meetingTimes?.some((mt) => {
+        const { day, start, end } = filters.timeWindow;
+        const win = {
+          start: toMinutes(start ?? "00:00"),
+          end: toMinutes(end ?? "23:59"),
+        };
+        const overlaps = (c.meetingTimes ?? []).some((mt) => {
+          if (day && mt.day !== day) return false;
           const a = toMinutes(mt.start);
           const b = toMinutes(mt.end);
           return intervalsOverlap(a, b, win.start, win.end);
@@ -239,8 +184,8 @@ function fuzzyContains(haystack: string, needle: string): boolean {
   return haystack.toLowerCase().includes(needle.toLowerCase());
 }
 
-function toMinutes(hhmm: string): number {
-  // naive parser: "HH:MM" -> minutes since 00:00
+function toMinutes(hhmm?: string): number {
+  if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) return NaN;
   const [h, m] = hhmm.split(":").map(Number);
   return h * 60 + m;
 }
@@ -251,6 +196,5 @@ function intervalsOverlap(
   bStart: number,
   bEnd: number,
 ): boolean {
-  // Overlap if each starts before the other ends
   return aStart < bEnd && bStart < aEnd;
 }
