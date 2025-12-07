@@ -1,25 +1,10 @@
 // src/Schedule.ts
 
-/** ================= Domain types (kept from your file) ===================== */
+import { Course, CourseCatalog } from "./CourseCatalog.ts";
+
+/** ================= Domain types ========================================== */
 export interface Requirement {
   code: string; // e.g., "QR", "HSCI", "LAB", "WRI"
-}
-
-export interface TimeSlot {
-  // Example: { day: "Mon", start: "10:00", end: "11:20"}
-  day: string;
-  start: string; // "HH:MM" 24h
-  end: string; // "HH:MM" 24h
-}
-
-export interface Course {
-  courseID: string; // authoritative ID, e.g., "CS-220-01-FA25"
-  title: string; // "Blue on the Move"
-  instructor: string; // "Ada Lovelace"
-  meetingTimes: TimeSlot[];
-  location?: string; // "SCI 101" or "Zoom"
-  requirements: Requirement[][];
-  campus?: string; // "Wellesley", "MIT", etc.
 }
 
 export interface User {
@@ -27,12 +12,7 @@ export interface User {
   name?: string;
 }
 
-/** ============== Catalog & AI interfaces (make async for Mongo) ============ */
-export interface CourseCatalogLike {
-  getById(courseID: string): Promise<Course>; // now async
-  search(query?: string, filters?: unknown): Promise<Set<Course>>; // now async
-}
-
+/** ============== AI interfaces ============================================= */
 /** Simple AI chooser that picks ONE course from filtered candidates. */
 export interface AIRecommenderLike {
   chooseCourse(
@@ -42,16 +22,14 @@ export interface AIRecommenderLike {
   ): Promise<Course | null> | Course | null;
 }
 
-/** ======================= AI prefs (unchanged) ============================= */
+/** ======================= AI prefs ========================================= */
 export interface AIPreferences {
   major: string;
   interests: Set<string>;
   availability: Set<string>;
 }
 
-/** ============== Gemini (unchanged except types are explicit) ============== */
-// (same lightweight integration you already had)
-
+/** ============== Gemini Integration ======================================== */
 type GenAIModel = {
   generateContent(
     prompt: string,
@@ -82,13 +60,11 @@ async function loadGeminiCtor(): Promise<void> {
 async function loadEnv(name: string): Promise<string> {
   try {
     // Deno first
-    // deno-lint-ignore no-explicit-any
     const d = (globalThis as any).Deno?.env?.get?.(name);
     if (typeof d === "string" && d.length > 0) return d;
   } catch {}
   try {
     // Node fallback
-    // deno-lint-ignore no-explicit-any
     const n = (globalThis as any).process?.env?.[name];
     if (typeof n === "string" && n.length > 0) return n;
   } catch {}
@@ -163,84 +139,10 @@ async function chooseWithGemini(
   return candidates.find((c) => c.courseID === picked) ?? null;
 }
 
-/** ===================== Mongo-backed catalog =============================== */
+/** ===================== Factory to create Schedule ========================= */
 /**
- * Mongo collection shape. If your actual field names differ, map them below.
+ * Factory to build a Schedule wired to MongoDB-backed CourseCatalog
  */
-type CourseDoc = {
-  courseID: string;
-  title: string;
-  instructor: string;
-  meetingTimes: { day: string; start: string; end: string }[];
-  location?: string;
-  requirements?: { code: string }[][]; // allow missing; we’ll default later
-  campus?: string;
-};
-
-import { Collection, Db, MongoClient } from "npm:mongodb";
-
-class MongoCourseCatalog implements CourseCatalogLike {
-  private col: Collection<CourseDoc>;
-
-  constructor(db: Db, collectionName = "courses") {
-    this.col = db.collection<CourseDoc>(collectionName);
-  }
-
-  /** Get a single course by ID (throws if not found) */
-  async getById(courseID: string): Promise<Course> {
-    const doc = await this.col.findOne({ courseID });
-    if (!doc) {
-      throw new Error(`CourseCatalog.getById: "${courseID}" not found`);
-    }
-    return this.docToCourse(doc);
-  }
-
-  /**
-   * Broad search:
-   * - if no query/filters: return ALL courses (be careful with very large catalogs)
-   * - if query provided: fuzzy-ish regex on title/instructor/courseID
-   * - extend filters as needed (department, days, etc.)
-   */
-  async search(query?: string, _filters?: unknown): Promise<Set<Course>> {
-    let cursor;
-    if (query && query.trim()) {
-      const q = query.trim();
-      cursor = this.col.find({
-        $or: [
-          { title: { $regex: q, $options: "i" } },
-          { instructor: { $regex: q, $options: "i" } },
-          { courseID: { $regex: q, $options: "i" } },
-        ],
-      });
-    } else {
-      cursor = this.col.find({});
-    }
-    const out: Course[] = [];
-    for await (const doc of cursor) {
-      out.push(this.docToCourse(doc));
-    }
-    return new Set(out);
-  }
-
-  /** Map Mongo doc -> your Course interface */
-  private docToCourse(doc: CourseDoc): Course {
-    return {
-      courseID: doc.courseID,
-      title: doc.title,
-      instructor: doc.instructor,
-      meetingTimes: (doc.meetingTimes ?? []).map((mt) => ({
-        day: mt.day,
-        start: mt.start,
-        end: mt.end,
-      })),
-      location: doc.location,
-      requirements: (doc.requirements as Requirement[][] | undefined) ?? [],
-      campus: doc.campus,
-    };
-  }
-}
-
-/** Factory to build a Schedule wired to Mongo */
 export async function createScheduleWithMongo(
   ai: AIRecommenderLike = { chooseCourse: () => null },
   opts?: {
@@ -249,25 +151,11 @@ export async function createScheduleWithMongo(
     collection?: string;
   },
 ): Promise<Schedule> {
-  const mongoUrl = opts?.mongoUrl || (await loadEnv("MONGODB_URL"));
-  const dbName = opts?.dbName || (await loadEnv("DB_NAME")) || "schedulEZ";
-  const collection = opts?.collection ||
-    (await loadEnv("COURSES_COLLECTION")) || "sample10";
-
-  if (!mongoUrl) {
-    throw new Error(
-      `createScheduleWithMongo: MONGODB_URL is required (env or opts.mongoUrl)`,
-    );
-  }
-  const client = new MongoClient(mongoUrl);
-  await client.connect();
-  const db = client.db(dbName);
-
-  const catalog = new MongoCourseCatalog(db, collection);
+  const catalog = await CourseCatalog.create(opts);
   return new Schedule(catalog, ai);
 }
 
-/** ======================= Schedule concept (async catalog) ================== */
+/** ======================= Schedule concept ================================= */
 export class Schedule {
   private schedules: Map<
     string,
@@ -279,18 +167,19 @@ export class Schedule {
   > = new Map();
 
   constructor(
-    private readonly catalog: CourseCatalogLike,
+    private readonly catalog: CourseCatalog,
     private readonly ai: AIRecommenderLike,
   ) {}
 
   // ------------------------------ core actions -------------------------------
 
-  /** New helper: add by ID, loads from Mongo-backed catalog */
+  /** Add a course by ID, loads from MongoDB-backed catalog */
   async addCourseById(owner: User, courseID: string): Promise<void> {
-    const course = await this.catalog.getById(courseID); // may be Mongo-backed
-    this.addCourse(owner, course); // <- sync
+    const course = await this.catalog.getById(courseID);
+    this.addCourse(owner, course);
   }
 
+  /** Add a course object directly to the schedule */
   addCourse(owner: User, course: Course): void {
     const s = this.ensureState(owner);
     if (s.courses.has(course.courseID)) {
@@ -301,6 +190,7 @@ export class Schedule {
     s.courses.set(course.courseID, course);
   }
 
+  /** Remove a course from the schedule */
   removeCourse(owner: User, courseID: string): void {
     const s = this.ensureState(owner);
     if (!s.courses.has(courseID)) {
@@ -311,6 +201,7 @@ export class Schedule {
     s.courses.delete(courseID);
   }
 
+  /** List all courses in the schedule */
   listSchedule(owner: User): Set<Course> {
     const s = this.ensureState(owner);
     if (s.courses.size === 0) {
@@ -319,6 +210,7 @@ export class Schedule {
     return new Set(s.courses.values());
   }
 
+  /** Clear all courses from the schedule */
   clear(owner: User): void {
     const s = this.ensureState(owner);
     s.courses.clear();
@@ -326,6 +218,7 @@ export class Schedule {
 
   // ------------------------------ AI actions ---------------------------------
 
+  /** Set AI preferences for course recommendations */
   setAIPreferences(
     owner: User,
     major: string,
@@ -337,7 +230,13 @@ export class Schedule {
     s.aiSuggestion = undefined;
   }
 
-  async suggestCourseAI(owner: User): Promise<Course> {
+  /** Get an AI-powered course suggestion
+   * @param excludeCourseIds - Array of course IDs to exclude from recommendations (already enrolled)
+   */
+  async suggestCourseAI(
+    owner: User,
+    excludeCourseIds: string[] = [],
+  ): Promise<Course> {
     const s = this.ensureState(owner);
     if (!s.aiPreferences) {
       throw new Error(
@@ -345,15 +244,34 @@ export class Schedule {
       );
     }
 
-    // Broad candidate pool from Mongo catalog
+    // Broad candidate pool from catalog
     const all = [...(await this.catalog.search())];
-    const candidates = all.filter((c) => !s.courses.has(c.courseID));
+
+    // Filter out courses that are:
+    // 1. Already in the server-side schedule (s.courses)
+    // 2. In the excludeCourseIds list (passed from frontend)
+    const excludeSet = new Set(
+      excludeCourseIds.map((id) => id.trim().toUpperCase()),
+    );
+
+    const candidates = all.filter((c) => {
+      const courseId = c.courseID.trim().toUpperCase();
+      // Exclude if in server-side schedule
+      if (s.courses.has(c.courseID)) return false;
+      // Exclude if in the frontend exclude list
+      if (excludeSet.has(courseId)) return false;
+      return true;
+    });
+
+    console.log(
+      `🤖 AI: ${all.length} total courses, ${excludeCourseIds.length} excluded, ${candidates.length} candidates remaining`,
+    );
 
     // 1) Try Gemini
     let pick = await chooseWithGemini(owner, candidates, s.aiPreferences);
     // 2) Optional adapter fallback
-    if (!pick && (this as any).ai?.chooseCourse) {
-      pick = await (this as any).ai.chooseCourse(
+    if (!pick && this.ai?.chooseCourse) {
+      pick = await this.ai.chooseCourse(
         owner,
         candidates,
         s.aiPreferences,
@@ -370,6 +288,7 @@ export class Schedule {
     return pick;
   }
 
+  /** Update AI suggestion after adding a course */
   async updateAfterAddAI(owner: User, addedCourse: Course): Promise<Course> {
     const s = this.ensureState(owner);
     if (!s.aiPreferences) {
@@ -393,5 +312,11 @@ export class Schedule {
       this.schedules.set(owner.id, state);
     }
     return state;
+  }
+
+  // ------------------------------ cleanup ------------------------------------
+  /** Close the underlying catalog connection */
+  async close(): Promise<void> {
+    await this.catalog.close();
   }
 }

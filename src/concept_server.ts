@@ -3,7 +3,7 @@ import { cors } from "jsr:@hono/hono/cors";
 import { getDb } from "@utils/database.ts";
 import { walk } from "jsr:@std/fs";
 import { parseArgs } from "jsr:@std/cli/parse-args";
-import { toFileUrl } from "jsr:@std/path/to-file-url";
+import { toFileUrl } from "@std/path"; // ✅ Correct import
 
 // Parse command-line arguments for port and base URL
 const flags = parseArgs(Deno.args, {
@@ -26,15 +26,13 @@ async function main() {
   app.use(
     "/*",
     cors({
-      origin: "http://localhost:5173",
+      origin: "http://localhost:5174",
       allowMethods: ["GET", "POST", "PUT", "DELETE"],
       allowHeaders: ["Content-Type"],
     }),
   );
 
   app.get("/", (c) => c.text("Concept Server is running."));
-
-  // ... rest of your code
 
   // --- Dynamic Concept Loading and Routing ---
   console.log(`Scanning for concepts in ./${CONCEPTS_DIR}...`);
@@ -52,7 +50,9 @@ async function main() {
     const conceptFilePath = `${entry.path}/${conceptName}Concept.ts`;
 
     try {
-      const modulePath = toFileUrl(Deno.realPathSync(conceptFilePath)).href;
+      // ✅ Better approach: use absolute path
+      const absolutePath = await Deno.realPath(conceptFilePath);
+      const modulePath = toFileUrl(absolutePath).href;
       const module = await import(modulePath);
       const ConceptClass = module.default;
 

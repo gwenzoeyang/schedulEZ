@@ -1,3 +1,12 @@
+---
+timestamp: 'Sat Dec 06 2025 23:25:24 GMT-0500 (Eastern Standard Time)'
+parent: '[[../20251206_232524.70d0fd42.md]]'
+content_id: 06cd36b715ee6a7f07a32a75c2c5eed1807beb3fafc080469d49ff0fa0934caa
+---
+
+# file: src/CourseCatalog.ts
+
+```typescript
 // courseschedule.ts - MongoDB-backed course catalog
 
 import { Collection, Db, MongoClient } from "npm:mongodb";
@@ -23,7 +32,6 @@ export interface Course {
   subject?: string;
   campus?: string; // "Wellesley", "MIT", etc.
   rmp?: string; // Rate My Professor link
-  description?: string; // Course description
 }
 
 export type CourseFilters = {
@@ -49,7 +57,6 @@ type CourseDoc = {
   location?: string;
   campus?: string;
   rmp?: string; // Rate My Professor link
-  description?: string; // Course description
 };
 
 // ============================================================================
@@ -97,8 +104,7 @@ function adaptCourse(dbRow: CourseDoc): Course {
     subject: departmentOfCourseId(courseID),
     location: dbRow.location,
     campus: dbRow.campus,
-    rmp: dbRow.rmp,
-    description: dbRow.description,
+    rmp: dbRow.rmp, // Rate My Professor link
   };
 }
 
@@ -318,3 +324,5 @@ export class CourseCatalog {
     await this.client.close();
   }
 }
+
+```

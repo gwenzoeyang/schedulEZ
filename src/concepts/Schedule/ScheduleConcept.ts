@@ -1,227 +1,248 @@
-import { Course, createScheduleWithMongo, User } from "../../Schedule.ts";
+// src/concepts/Schedule/ScheduleConcept.ts
+
+import { createScheduleWithMongo } from "../../Schedule.ts";
+import type { User } from "../../Schedule.ts";
 
 export default class ScheduleConcept {
-  private scheduleInstance: any;
+  private schedule: any = null;
 
-  constructor(private db: any) {
-    // DB passed from concept_server but we use MongoDB connection from Schedule
+  constructor(private db: any) {}
+
+  private async getSchedule() {
+    if (!this.schedule) {
+      this.schedule = await createScheduleWithMongo();
+    }
+    return this.schedule;
   }
 
+  // ==================== Query Methods (underscore prefix) ====================
+
   /**
-   * Initialize schedule and return all courses from MongoDB
-   * This matches the frontend call: scheduleAPI.createScheduleWithMongo()
+   * Get a schedule by ID (user's schedule)
+   * Frontend calls: scheduleAPI.getScheduleById(schedule)
    */
-  async createSchedulewithMongo(body: any) {
+  async _getScheduleById(params: { schedule: string }) {
+    const schedule = await this.getSchedule();
+    const user: User = { id: params.schedule };
+
     try {
-      console.log("✅ ScheduleConcept: createSchedulewithMongo called");
-
-      // Create schedule with MongoDB connection from .env
-      this.scheduleInstance = await createScheduleWithMongo();
-
-      // Get all courses from MongoDB catalog by searching with no query
-      const coursesSet = await this.scheduleInstance.catalog.search();
-
-      // CRITICAL: Convert Set to Array for JSON serialization
-      const coursesArray = Array.from(coursesSet);
-
-      console.log(
-        `✅ ScheduleConcept: Found ${coursesArray.length} courses from MongoDB`,
-      );
-
-      // Map MongoDB Course format to frontend format
-      const formattedCourses = coursesArray.map((course: Course) => {
-        // Extract department from courseID (e.g., "CS-230-01" -> "CS")
-        const subject = course.courseID.split("-")[0] || "Unknown";
-
-        // Format meeting times for frontend (e.g., "Monday 9:00-10:00")
-        const meets = course.meetingTimes.map((mt) =>
-          `${mt.day} ${mt.start}-${mt.end}`
-        );
-
-        return {
-          courseId: course.courseID,
-          name: course.title,
-          description: `Instructor: ${course.instructor}${
-            course.location ? ` | Location: ${course.location}` : ""
-          }`,
-          credits: 3, // Default to 3 - you may want to add this field to MongoDB
-          subject: subject,
-          meets: meets,
-          prerequisites: [], // You could extract this from requirements if needed
-          instructor: course.instructor,
-          location: course.location,
-          campus: course.campus,
-          requirements: course.requirements,
-        };
-      });
-
-      console.log(
-        `✅ ScheduleConcept: Returning ${formattedCourses.length} formatted courses`,
-      );
-      return formattedCourses;
+      const courses = schedule.listSchedule(user);
+      return {
+        scheduleId: params.schedule,
+        userId: params.schedule,
+        courses: Array.from(courses),
+        count: courses.size,
+      };
     } catch (error) {
-      console.error(
-        "❌ ScheduleConcept: Error in createSchedulewithMongo:",
-        error,
-      );
-      return { error: error.message || "Failed to load courses from MongoDB" };
+      // Schedule is empty or doesn't exist
+      return {
+        scheduleId: params.schedule,
+        userId: params.schedule,
+        courses: [],
+        count: 0,
+      };
     }
   }
 
   /**
-   * Add a course to a user's schedule by courseID
+   * Find schedules by criteria
+   * Frontend calls: scheduleAPI.findSchedules(criteria)
    */
-  async addCourseById(body: { userId: string; courseID: string }) {
-    try {
-      if (!this.scheduleInstance) {
-        this.scheduleInstance = await createScheduleWithMongo();
+  async _findSchedules(params: any) {
+    // This would need more complex implementation
+    // For now, return empty array
+    return [];
+  }
+
+  // ==================== Mutation Methods ====================
+
+  /**
+   * Create a new schedule
+   * Frontend calls: scheduleAPI.createSchedule(scheduleData)
+   */
+  async createSchedule(params: {
+    userId: string;
+    scheduleName?: string;
+    courses?: string[];
+  }) {
+    const schedule = await this.getSchedule();
+    const user: User = { id: params.userId, name: params.scheduleName };
+
+    // Add courses if provided
+    if (params.courses && params.courses.length > 0) {
+      for (const courseID of params.courses) {
+        try {
+          await schedule.addCourseById(user, courseID);
+        } catch (error) {
+          console.error(`Failed to add course ${courseID}:`, error);
+        }
       }
-
-      const user: User = { id: body.userId };
-      await this.scheduleInstance.addCourseById(user, body.courseID);
-
-      return { success: true, message: `Added course ${body.courseID}` };
-    } catch (error) {
-      console.error("❌ ScheduleConcept: Error adding course:", error);
-      return { error: error.message };
     }
+
+    return {
+      success: true,
+      scheduleId: params.userId,
+      message: "Schedule created successfully",
+    };
   }
 
   /**
-   * Remove a course from a user's schedule
+   * Update a schedule (add/remove courses)
+   * Frontend calls: scheduleAPI.updateSchedule(scheduleData)
    */
-  async removeCourse(body: { userId: string; courseID: string }) {
-    try {
-      if (!this.scheduleInstance) {
-        this.scheduleInstance = await createScheduleWithMongo();
+  async updateSchedule(params: {
+    scheduleId: string;
+    userId?: string;
+    addCourses?: string[];
+    removeCourses?: string[];
+  }) {
+    const schedule = await this.getSchedule();
+    const user: User = { id: params.userId || params.scheduleId };
+
+    // Remove courses
+    if (params.removeCourses && params.removeCourses.length > 0) {
+      for (const courseID of params.removeCourses) {
+        try {
+          schedule.removeCourse(user, courseID);
+        } catch (error) {
+          console.error(`Failed to remove course ${courseID}:`, error);
+        }
       }
-
-      const user: User = { id: body.userId };
-      this.scheduleInstance.removeCourse(user, body.courseID);
-
-      return { success: true, message: `Removed course ${body.courseID}` };
-    } catch (error) {
-      console.error("❌ ScheduleConcept: Error removing course:", error);
-      return { error: error.message };
     }
+
+    // Add courses
+    if (params.addCourses && params.addCourses.length > 0) {
+      for (const courseID of params.addCourses) {
+        try {
+          await schedule.addCourseById(user, courseID);
+        } catch (error) {
+          console.error(`Failed to add course ${courseID}:`, error);
+        }
+      }
+    }
+
+    return {
+      success: true,
+      scheduleId: params.scheduleId,
+      message: "Schedule updated successfully",
+    };
   }
 
   /**
-   * List all courses in a user's schedule
+   * Delete a schedule (clear all courses)
+   * Frontend calls: scheduleAPI.deleteSchedule(schedule)
    */
-  async listSchedule(body: { userId: string }) {
+  async deleteSchedule(params: { schedule: string }) {
+    const schedule = await this.getSchedule();
+    const user: User = { id: params.schedule };
+
     try {
-      if (!this.scheduleInstance) {
-        this.scheduleInstance = await createScheduleWithMongo();
-      }
-
-      const user: User = { id: body.userId };
-      const coursesSet = this.scheduleInstance.listSchedule(user);
-
-      // Convert Set to Array
-      const coursesArray = Array.from(coursesSet);
-
-      // Format for frontend
-      const formattedCourses = coursesArray.map((course: Course) => ({
-        courseId: course.courseID,
-        name: course.title,
-        description: `Instructor: ${course.instructor}`,
-        credits: 3,
-        subject: course.courseID.split("-")[0] || "Unknown",
-        meets: course.meetingTimes.map((mt) =>
-          `${mt.day} ${mt.start}-${mt.end}`
-        ),
-        instructor: course.instructor,
-        location: course.location,
-        campus: course.campus,
-      }));
-
-      return formattedCourses;
+      schedule.clear(user);
+      return {
+        success: true,
+        message: "Schedule deleted successfully",
+      };
     } catch (error) {
-      console.error("❌ ScheduleConcept: Error listing schedule:", error);
-      return { error: error.message };
+      return {
+        success: false,
+        error: "Schedule not found or already empty",
+      };
     }
   }
 
+  // ==================== Helper Methods for Frontend ====================
+
   /**
-   * Clear a user's schedule
+   * Add a single course to schedule
+   * Convenience method for frontend
    */
-  async clearSchedule(body: { userId: string }) {
-    try {
-      if (!this.scheduleInstance) {
-        this.scheduleInstance = await createScheduleWithMongo();
-      }
+  async addCourse(params: { userId: string; courseID: string }) {
+    const schedule = await this.getSchedule();
+    const user: User = { id: params.userId };
 
-      const user: User = { id: body.userId };
-      this.scheduleInstance.clear(user);
+    await schedule.addCourseById(user, params.courseID);
+    return {
+      success: true,
+      message: `Course ${params.courseID} added to schedule`,
+    };
+  }
 
-      return { success: true, message: "Schedule cleared" };
-    } catch (error) {
-      console.error("❌ ScheduleConcept: Error clearing schedule:", error);
-      return { error: error.message };
-    }
+  /**
+   * Remove a single course from schedule
+   * Convenience method for frontend
+   */
+  async removeCourse(params: { userId: string; courseID: string }) {
+    const schedule = await this.getSchedule();
+    const user: User = { id: params.userId };
+
+    schedule.removeCourse(user, params.courseID);
+    return {
+      success: true,
+      message: `Course ${params.courseID} removed from schedule`,
+    };
+  }
+
+  /**
+   * Get user's schedule
+   * Convenience method for frontend
+   */
+  async getUserSchedule(params: { userId: string }) {
+    return this._getScheduleById({ schedule: params.userId });
   }
 
   /**
    * Set AI preferences for course recommendations
    */
-  async setAIPreferences(
-    body: {
-      userId: string;
-      major: string;
-      interests: string[];
-      availability: string[];
-    },
-  ) {
-    try {
-      if (!this.scheduleInstance) {
-        this.scheduleInstance = await createScheduleWithMongo();
-      }
+  async setAIPreferences(params: {
+    userId: string;
+    major: string;
+    interests: string[];
+    availability: string[];
+  }) {
+    const schedule = await this.getSchedule();
+    const user: User = { id: params.userId };
 
-      const user: User = { id: body.userId };
-      this.scheduleInstance.setAIPreferences(
-        user,
-        body.major,
-        new Set(body.interests),
-        new Set(body.availability),
-      );
+    schedule.setAIPreferences(
+      user,
+      params.major,
+      new Set(params.interests),
+      new Set(params.availability),
+    );
 
-      return { success: true, message: "AI preferences set" };
-    } catch (error) {
-      console.error("❌ ScheduleConcept: Error setting AI preferences:", error);
-      return { error: error.message };
-    }
+    return {
+      success: true,
+      message: "AI preferences set successfully",
+    };
   }
 
   /**
    * Get AI course suggestion
+   * @param excludeCourseIds - Array of course IDs to exclude (already in user's schedule)
    */
-  async suggestCourseAI(body: { userId: string }) {
+  async suggestCourse(params: { userId: string; excludeCourseIds?: string[] }) {
+    const schedule = await this.getSchedule();
+    const user: User = { id: params.userId };
+
     try {
-      if (!this.scheduleInstance) {
-        this.scheduleInstance = await createScheduleWithMongo();
-      }
-
-      const user: User = { id: body.userId };
-      const suggestedCourse = await this.scheduleInstance.suggestCourseAI(user);
-
-      // Format for frontend
+      // Pass excludeCourseIds to filter out already enrolled courses
+      const suggestion = await schedule.suggestCourseAI(
+        user,
+        params.excludeCourseIds || [],
+      );
       return {
-        courseId: suggestedCourse.courseID,
-        name: suggestedCourse.title,
-        description: `Instructor: ${suggestedCourse.instructor}`,
-        credits: 3,
-        subject: suggestedCourse.courseID.split("-")[0] || "Unknown",
-        meets: suggestedCourse.meetingTimes.map((mt) =>
-          `${mt.day} ${mt.start}-${mt.end}`
-        ),
-        instructor: suggestedCourse.instructor,
-        location: suggestedCourse.location,
-        campus: suggestedCourse.campus,
+        success: true,
+        suggestion,
       };
-    } catch (error) {
-      console.error("❌ ScheduleConcept: Error suggesting course:", error);
-      return { error: error.message };
+    } catch (error: any) {
+      // Check if no courses available
+      if (error.message && error.message.includes("no suitable course")) {
+        return {
+          success: false,
+          allCoursesEnrolled: true,
+          message: "All available courses have been added to your schedule",
+        };
+      }
+      throw error;
     }
   }
 }

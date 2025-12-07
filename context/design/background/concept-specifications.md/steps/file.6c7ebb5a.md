@@ -1,3 +1,12 @@
+---
+timestamp: 'Sun Dec 07 2025 00:56:17 GMT-0500 (Eastern Standard Time)'
+parent: '[[../20251207_005617.47f12851.md]]'
+content_id: 6c7ebb5abce6fdc5506fced4895fd721c251a309009e08b75f6bd2df09e3fc2b
+---
+
+# file: src/CourseCatalog.ts
+
+```typescript
 // courseschedule.ts - MongoDB-backed course catalog
 
 import { Collection, Db, MongoClient } from "npm:mongodb";
@@ -318,3 +327,5 @@ export class CourseCatalog {
     await this.client.close();
   }
 }
+
+```
