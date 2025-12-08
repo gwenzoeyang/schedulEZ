@@ -4,4 +4,6 @@
 ctx
 ctx.exe
 .obsidian/workspace.json
-checkin_screen_recording.mov
+src/concepts/concepts.ts
+src/concepts/test_concepts.ts
+src/syncs/syncs.ts
