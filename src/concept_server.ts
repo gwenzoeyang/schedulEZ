@@ -26,7 +26,7 @@ async function main() {
   app.use(
     "/*",
     cors({
-      origin: "*",
+      origin: "http://localhost:5174",
       allowMethods: ["GET", "POST", "PUT", "DELETE"],
       allowHeaders: ["Content-Type"],
     }),
