@@ -1,5 +1,9 @@
 # Interesting Moments (Assignment 4a)
 
+Updated 4b - Changes I made:
+
+Not much, the backend is pretty much the same. The only thing I changed was the Mongo Database and the information represented there, so I had to edit the representation of a course in the backend to include new categories (description, professor rating, etc)
+
 Disconnect in the assignment goal and implementation - I realized while programming that Wellesley students can have travel scheduled the same time as a class, or as another travel (if they are trying to put in all possible times that they can board the bus). I really wanted my app to be more flexible than not, which is why I decided to simplify the entire CrossRegTravel.spec to have it just add times instead of also accouting for overlap.
 
 [previously](context/src/CrossRegTravel.ts/20251019_083101.5cc65812.md)
