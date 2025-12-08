@@ -25,12 +25,39 @@
  */
 
 export const inclusions: Record<string, string> = {
-  // Feel free to delete these example inclusions
-  "/api/LikertSurvey/_getSurveyQuestions": "this is a public query",
-  "/api/LikertSurvey/_getSurveyResponses": "responses are public",
-  "/api/LikertSurvey/_getRespondentAnswers": "answers are visible",
-  "/api/LikertSurvey/submitResponse": "allow anyone to submit response",
-  "/api/LikertSurvey/updateResponse": "allow anyone to update their response",
+  // CourseCatalog - Public read-only queries (anyone can browse courses)
+  "/api/CourseCatalog/_getAllCourses":
+    "public query - anyone can view available courses",
+  "/api/CourseCatalog/_getCourseByCode":
+    "public query - anyone can view course details",
+  "/api/CourseCatalog/_searchCourses":
+    "public query - anyone can search courses",
+  "/api/CourseCatalog/_getCoursePrerequisites":
+    "public query - prerequisite info is public",
+  "/api/CourseCatalog/_getCourseCorequisites":
+    "public query - corequisite info is public",
+
+  // CrossRegTravel - Public read-only queries (bus schedule is public info)
+  "/api/CrossRegTravel/_getBusSchedule":
+    "public query - bus schedule is public information",
+  "/api/CrossRegTravel/_calculateTravelTime":
+    "public query - travel time calculation is public",
+  "/api/CrossRegTravel/_findDepartureTime":
+    "public query - departure times are public",
+  "/api/CrossRegTravel/_getTravelRequestStatus":
+    "public query - allows checking request status",
+  "/api/CrossRegTravel/_getStudentTravelRequests":
+    "public query - view travel requests",
+  "/api/CrossRegTravel/_getCourseTravelRequests":
+    "public query - view course travel requests",
+
+  // Schedule - Read-only queries
+  "/api/Schedule/_getScheduleById": "public query - allows viewing a schedule",
+  "/api/Schedule/_findSchedules": "public query - allows searching schedules",
+  "/api/Schedule/getUserSchedule":
+    "public query - allows viewing user's schedule",
+  "/api/Schedule/setAIPreferences": "allow users to set AI preferences",
+  "/api/Schedule/suggestCourse": "allow users to get AI course suggestions",
 };
 
 /**
@@ -44,7 +71,26 @@ export const inclusions: Record<string, string> = {
  */
 
 export const exclusions: Array<string> = [
-  // Feel free to delete these example exclusions
-  "/api/LikertSurvey/createSurvey",
-  "/api/LikertSurvey/addQuestion",
+  // CourseCatalog - Internal methods (should not be exposed)
+  "/api/CourseCatalog/getCatalog",
+  "/api/CourseCatalog/toFrontendFormat",
+
+  // CourseCatalog - Admin-only actions (require authentication)
+  "/api/CourseCatalog/addCourse",
+  "/api/CourseCatalog/updateCourseDetails",
+  "/api/CourseCatalog/removeCourse",
+
+  // CrossRegTravel - User/Admin actions (modify data)
+  "/api/CrossRegTravel/requestTravel",
+  "/api/CrossRegTravel/approveTravel",
+  "/api/CrossRegTravel/denyTravel",
+  "/api/CrossRegTravel/cancelTravel",
+
+  // Schedule - Actions that modify user data
+  "/api/Schedule/getSchedule",
+  "/api/Schedule/createSchedule",
+  "/api/Schedule/updateSchedule",
+  "/api/Schedule/deleteSchedule",
+  "/api/Schedule/addCourse",
+  "/api/Schedule/removeCourse",
 ];
