@@ -22,6 +22,8 @@ export interface Course {
   location?: string; // "SCI 101" or "Zoom"
   subject?: string;
   campus?: string; // "Wellesley", "MIT", etc.
+  description?: string;
+  rmp?: string;
 }
 
 export type CourseFilters = {
@@ -45,6 +47,8 @@ type CourseDoc = {
   DBmeetingTimes?: string[] | string;
   location?: string;
   campus?: string;
+  description?: string;
+  rmp?: string;
 };
 
 // ============================================================================
@@ -88,6 +92,8 @@ function adaptCourse(dbRow: CourseDoc): Course {
     subject: departmentOfCourseId(courseID),
     location: dbRow.location,
     campus: dbRow.campus,
+    description: dbRow.description,
+    rmp: dbRow.rmp,
   };
 }
 
@@ -200,7 +206,7 @@ export class CourseCatalog {
 
   /**
    * Search courses with query string and filters
-   * Results are sorted: courseID matches first, then title matches
+   * Searches only courseID and title (not instructor or description)
    */
   async search(
     query?: string,
@@ -210,7 +216,7 @@ export class CourseCatalog {
     const mongoQuery: any = {};
     const conditions: any[] = [];
 
-    // Text search on courseID, title, instructor
+    // Text search on courseID and title ONLY
     if (query && query.trim()) {
       const tokens = tokenize(query);
       if (tokens.length > 0) {
@@ -219,7 +225,6 @@ export class CourseCatalog {
             { courseID: { $regex: token, $options: "i" } },
             { courseId: { $regex: token, $options: "i" } },
             { title: { $regex: token, $options: "i" } },
-            { instructor: { $regex: token, $options: "i" } },
           ],
         }));
         conditions.push(...textConditions);
@@ -245,7 +250,7 @@ export class CourseCatalog {
 
     // Fetch matching documents
     const cursor = this.col.find(mongoQuery);
-    const allCourses: Course[] = [];
+    const results = new Set<Course>();
 
     for await (const doc of cursor) {
       const course = adaptCourse(doc);
@@ -281,39 +286,6 @@ export class CourseCatalog {
         if (!overlaps) continue;
       }
 
-      allCourses.push(course);
-    }
-
-    // Sort results: courseID starts with query first, then courseID contains query, then others
-    if (query && query.trim()) {
-      const queryLower = query.toLowerCase().trim();
-
-      allCourses.sort((a, b) => {
-        const aIdLower = a.courseID.toLowerCase();
-        const bIdLower = b.courseID.toLowerCase();
-
-        // Priority 1: courseID starts with the search query
-        const aStartsWith = aIdLower.startsWith(queryLower);
-        const bStartsWith = bIdLower.startsWith(queryLower);
-
-        if (aStartsWith && !bStartsWith) return -1;
-        if (!aStartsWith && bStartsWith) return 1;
-
-        // Priority 2: courseID contains the search query
-        const aContains = aIdLower.includes(queryLower);
-        const bContains = bIdLower.includes(queryLower);
-
-        if (aContains && !bContains) return -1;
-        if (!aContains && bContains) return 1;
-
-        // Otherwise sort alphabetically by courseID
-        return a.courseID.localeCompare(b.courseID);
-      });
-    }
-
-    // Convert to Set (preserves insertion order)
-    const results = new Set<Course>();
-    for (const course of allCourses) {
       results.add(course);
     }
 
