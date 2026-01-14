@@ -22,6 +22,9 @@ export interface Course {
   location?: string; // "SCI 101" or "Zoom"
   subject?: string;
   campus?: string; // "Wellesley", "MIT", etc.
+  description?: string;
+  rmp?: string;
+  requirements?: string;
 }
 
 export type CourseFilters = {
@@ -42,9 +45,13 @@ type CourseDoc = {
   courseId?: string; // alternate field name
   title?: string;
   instructor?: string;
-  DBmeetingTimes?: string[] | string;
+  meeting_times?: string[] | string; // MongoDB field name
+  DBmeetingTimes?: string[] | string; // alternate field name
   location?: string;
   campus?: string;
+  description?: string;
+  rmp?: string;
+  requirements?: string;
 };
 
 // ============================================================================
@@ -79,15 +86,20 @@ function departmentOfCourseId(courseId: string): string {
 
 function adaptCourse(dbRow: CourseDoc): Course {
   const courseID: string = dbRow.courseID ?? dbRow.courseId ?? "";
+  // Use meeting_times (MongoDB field) or DBmeetingTimes as fallback
+  const rawTimes = dbRow.meeting_times ?? dbRow.DBmeetingTimes;
   return {
     courseID,
     title: dbRow.title ?? "",
     instructor: dbRow.instructor ?? "",
-    DBmeetingTimes: dbRow.DBmeetingTimes,
-    meetingTimes: parseDBTimes(dbRow.DBmeetingTimes),
+    DBmeetingTimes: rawTimes,
+    meetingTimes: parseDBTimes(rawTimes),
     subject: departmentOfCourseId(courseID),
     location: dbRow.location,
     campus: dbRow.campus,
+    description: dbRow.description,
+    rmp: dbRow.rmp,
+    requirements: dbRow.requirements,
   };
 }
 
